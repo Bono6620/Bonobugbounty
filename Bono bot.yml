@@ -1,0 +1,55 @@
+name: Bono Bug Bounty Bot
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # poll every 5 minutes
+  workflow_dispatch: {}      # allow manual run too
+
+concurrency:
+  group: bono-bot
+  cancel-in-progress: false   # never kill a scan mid-run; queue instead
+
+jobs:
+  poll-and-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55       # stay under the 6h Actions ceiling with margin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Install recon tools (ProjectDiscovery)
+        run: |
+          go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+          go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
+          go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+          go install -v github.com/projectdiscovery/katana/cmd/katana@latest
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      - name: Update nuclei templates
+        run: nuclei -update-templates -silent || true
+
+      - name: Install Python deps
+        run: pip install -r requirements.txt
+
+      - name: Run bot poll cycle
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ALLOWED_USERS: ${{ secrets.ALLOWED_USERS }}
+          H1_USERNAME: ${{ secrets.H1_USERNAME }}
+          H1_API_TOKEN: ${{ secrets.H1_API_TOKEN }}
+        run: python bono_bot.py
+
+      - name: Persist state
+        run: |
+          git config user.name "bono-bot"
+          git config user.email "bono-bot@users.noreply.github.com"
+          git add state.json
+          git diff --cached --quiet || git commit -m "chore: update bot state [skip ci]"
+          git push || true
